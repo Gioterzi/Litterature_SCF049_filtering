@@ -36,6 +36,7 @@ library(ggmsa)
 library(dendextend)
 library(usedist)
 
+
 read_fasta_df <- function (file = "") {
   fasta <- readLines(file)
   ind <- grep(">", fasta)
@@ -203,8 +204,9 @@ reference_data_clean <- reference_data %>%
   dplyr::rename(name = final_name)
 ```
 
+
 ```{r}
-q <- c("C1", "C1b", "C1c", "C42.2", "C1bh", "C1br", "C72k")
+q <- c("C1", "C1b", "C1c", "C42.2", "C1bh", "C1br", "C72k", "C1w", "C1al", "C3ew")
 qs <- merged_data %>%
   filter(name %in% q) %>%
   distinct(name, sequence) %>%
@@ -218,10 +220,10 @@ targets <- reference_data_clean %>%
 target_count <- targets %>%
   mutate(index_name = paste0(index, sample_name)) %>%
   dplyr::count(index_name) %>% 
-  filter(n > 6) %>%
+  filter(n > 9) %>%
   pull(index_name)
 
-reference_subset <- reference_data_clean %>%
+reference_subset <- reference_data_clean  %>%
   mutate(index_name = paste0(index, sample_name)) %>%
   filter(index_name %in% target_count) %>%
   filter(str_detect(name, "C"))
@@ -238,6 +240,13 @@ q_names <- all_data %>% distinct(name) %>% pull(name)
 q_pal <- randomcoloR::randomColor(count = length(q_names))
 names(q_pal) <- q_names
 
+top_20_names <- all_data %>%
+  group_by(name) %>%
+  summarize(total_value = sum(value, na.rm = TRUE)) %>%
+  arrange(desc(total_value)) %>%
+   head(20) %>%
+  pull(name)
+
 all_data %>%
   mutate(host_genus = case_when(host_genus == "acropora" ~ "Acropora", TRUE ~ host_genus)) %>%
   filter(!str_detect(sample_name, "S8.pdf")) %>% # this is Hugo's study where we put SCF055 into corals
@@ -245,17 +254,111 @@ all_data %>%
   mutate(name = fct_inorder(name)) %>%
   ggplot(aes(sample_name, value)) +
   geom_bar(stat = "identity", position = "fill", aes(fill = name)) +
-  facet_wrap(~host_genus, scales = "free_x", ncol = 6) +
+  facet_wrap(~host_genus, scales = "free_x", ncol = 7) +
   scale_y_continuous(labels = scales::percent) + # # turn on this to change to rel abund
   scale_color_manual(values = q_pal) + # remove sym others here and below
-  scale_fill_manual(values = q_pal) +
-  theme(legend.position = "none", aspect.ratio = 1, text = element_text(size=15)) +
+  scale_fill_manual(values = q_pal, limits = top_20_names, labels = top_20_names) +
+  theme(legend.position = "bottom", aspect.ratio = 1, text = element_text(size=15)) +
   #theme(axis.text.x = element_text(angle = 90)) +
   theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 3)) +
   ylab("Relative abundance (%)")
 
 ggsave("compared_profiles.pdf", width = 10, height = 6, dpi = 300)
 ```
+
+
+
+#merging my filtering and master filtering
+```{r}
+reference_data_clean2 <- reference_data_clean %>%
+  mutate(index_name = paste0(index, sample_name))
+
+all_data2 <- rbind(clado_refs, reference_data_clean2 %>% select(sample_name = index_name, name, value, sequence, host_genus))
+
+filtered <- all_data2 %>%
+  # Group by sample_count
+  group_by(sample_name) %>%
+  # Filter to include only the sample_names that contain sequences C1, C1c, and C3
+ filter(all(c("C1", "C1b", "C1c", "C42.2", "C1bh", "C1br", "C72k", "C1w", "C1al", "C3ew") %in% name)) %>%
+  # Further filter to retain only those sample_names where count(C1) > count(C1c) > count(C3)
+  filter(sum(ifelse(name == "C1", value, 0)) >
+           sum(ifelse(name == "C1c", value, 0)) &
+           sum(ifelse(name == "C1c", value, 0)) >
+           sum(ifelse(name == "C1b", value, 0)))
+filtered <- filtered %>%
+  arrange(sample_name, desc(value))
+
+
+# Determine names unique to each group
+unique_to_C1c <- anti_join(filtered, all_data, by = "sample_name") #Only C1c profiles
+unique_to_C1b <- anti_join(all_data, filtered, by = "sample_name") #Only C1b profiles
+
+
+# Filter to keep only the top 3 sequences for each sample_count
+top_sequences <- filtered %>%
+  group_by(sample_name) %>%
+  top_n(3, wt = value)
+
+# Filter to keep only the sample_names where C1, C1c and C1b are the top 3 sequences
+filtered2 <- top_sequences %>%
+  group_by(sample_name) %>%
+  filter(all(c("C1", "C1c", "C1b") %in% name))
+
+# Merge with the original dataset to have all the profile for each selected sample
+final <- filtered %>%
+  semi_join(filtered2, by = "sample_name")
+
+# Get percentage of each sequence in each sample
+final<- final %>%
+  group_by(sample_name) %>%
+  mutate(percentage = value / sum(value) * 100)
+
+# Drop sequences with percentage lower than 1%
+plot<- final %>%
+  filter(!str_detect(sample_name, "S8.pdf")) %>%
+  filter(!sample_name %in% sample_name[name == "12748_C"]) %>%
+  filter(percentage >= 0.1)
+
+g1 <- ggplot(plot, aes(x = sample_name, y = percentage, fill = reorder(name, percentage))) +
+  geom_bar(stat = "identity") +
+ scale_fill_manual(values= q_pal, limits = top_20_names, labels = top_20_names)+
+  labs(title = "SCF_049",
+       x = "Sample",
+       y = "",
+       fill = "DIVs") +
+  theme(legend.position = "none") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 5))
+
+all_data3 <- all_data %>%
+  group_by(sample_name) %>%
+  filter(sum(ifelse(name == "C1", value, 0)) >
+           sum(ifelse(name == "C1c", value, 0)) &
+           sum(ifelse(name == "C1c", value, 0)) >
+           sum(ifelse(name == "C1b", value, 0)))
+
+g2 <- all_data3 %>%
+  filter(!str_detect(sample_name, "S8.pdf")) %>%
+  filter(!sample_name %in% sample_name[name == "12748_C"]) %>%
+  arrange(desc(value)) %>% 
+  ggplot(aes(x = sample_name, y = value, fill = name)) +
+  geom_bar(stat = "identity", position = "fill", aes(fill = name)) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values= q_pal, limits = top_20_names, labels = top_20_names)+
+  labs(title = "SCF_049",
+       x = "Sample",
+       y = "",
+       fill = "DIVs") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 5))
+
+g3 <- g1/g2
+g3
+
+ggsave("compared_filtering.pdf", plot = g3, device = "pdf")
+ggsave("strict_filtering.pdf", plot = g2, device = "pdf")
+
+```
+
 
 ```{r}
 fasta_data <- paste0(">", all_data$name, "\n", all_data$sequence)
@@ -268,7 +371,7 @@ fasta_poci <- read_fasta_df("output.fasta") %>%
   
 kdist_poci <- fasta_poci %>%
   dna_to_DNAbin() %>%
-  kdistance(k = 7, residues = "DNA", method = "edgar") %>%
+  kdistance(k = 6, residues = "DNA", method = "edgar") %>%
   as.matrix()
 
 k_tree_poci <- kdist_poci %>% phangorn::upgma()
@@ -360,6 +463,7 @@ p2
 ggsave("Heatmap_dendrogram_profiles.pdf", plot = p2, device = "pdf")
 
 ```
+#dbRDA -> Wrong, no constrain needed on GUnifrac distances
 
 ```{r}
 dist_matrix_poci <- as.matrix(dist_poci)
@@ -385,5 +489,88 @@ p3 <- ggplot(sites, aes(x = CAP1, y = CAP2, color = color)) +
     panel.grid.major = element_blank())
 ggsave("dbRDA.pdf", plot = p3, device = "pdf", height = 25, width = 40)
 
+
+```
+
+
+#GUnifrac distance PCA
+
+```{r}
+dist_matrix_poci <- as.matrix(dist_poci)
+samples_to_exclude <- c("S4.pdf14NBOb", "S4.pdf27NBOb2","2060.pdfC23", "1907.pdf01-NCITS2")
+seqs_wide_poci_filtered <- seqs_wide_poci[!rownames(seqs_wide_poci) %in% samples_to_exclude, ]
+dist_matrix_filtered <- dist_matrix_poci[!rownames(dist_matrix_poci) %in% samples_to_exclude, ] 
+
+
+pca_result <- prcomp(dist_matrix_filtered)
+
+# Get the scores of the principal components
+pca_scores <- pca_result$x
+sample_names <- rownames(dist_matrix_filtered)
+# Plot PCA
+p4 <- ggplot(data = as.data.frame(pca_scores), aes(x = PC1, y = PC2, label=sample_names)) +
+  geom_point(size = 3, shape = 1) +
+  geom_text(size = 3, hjust = -0.2, vjust = -0.2) +
+  labs(title = "PCA of GUnifrac Distance Matrix",
+       x = "PC1",
+       y = "PC2") +
+  theme_minimal()
+
+ggsave("GUnifrac_distance_PCA.pdf", plot = p4, device = "pdf", height = 40, width = 40)
+
+```
+
+
+
+```{r}
+q2 <- c("C1−49−1_18S","C1−49−2_18S","C1−49−3_18S", "S4.pdf41BNMb", "2060.pdfC68", "2060.pdfE69", "2060.pdfE67", "2060.pdfC70", "Ca1", "Ca2", "Ca3", "2060.pdfE11")
+qs <- all_data %>%
+  filter(sample_name %in% q2) %>%
+  distinct(sample_name, name, sequence, value) 
+
+qs %>%
+   mutate(sample_name = factor(sample_name, levels = q2)) %>%
+  arrange(desc(value)) %>%
+  mutate(name = as.factor(name)) %>%
+  mutate(name = fct_inorder(name)) %>%
+  ggplot(aes(sample_name, value)) +
+  geom_bar(aes(fill = name, colour = name), stat = "identity", position = "fill") +
+  scale_y_continuous(labels = scales::percent) + # # turn on this to change to rel abund
+  scale_color_manual(values = c_pal) + # remove sym others here and below
+  scale_fill_manual(values = c_pal) +
+  theme(legend.position = "bottom", aspect.ratio = 0.25, text = element_text(size=15)) +
+  ylab("Relative abundance (%)")
+
+ggsave("SCF049vs055_profiles_afterPCA.pdf", width = 10, height = 6, dpi = 300)
+
+
+group49 <- c("C1-49-1_18S","C1-49-2_18S","C1-49-3_18S", "S4.pdf41BNMb", "2060.pdfC68", "2060.pdfE69", "2060.pdfE67","2060.pdfC70")
+group55 <- c( "Ca1", "Ca2", "Ca3", "2060.pdfE11")
+
+# Filter the dataset for each group
+group49_data <- all_data %>% filter(sample_name %in% group49)
+group55_data <- all_data %>% filter(sample_name %in% group55)
+
+group1_summary <- group49_data %>%
+  group_by(name) %>%
+  summarize(total_count = sum(value), .groups = 'drop')
+
+group2_summary <- group55_data %>%
+  group_by(name) %>%
+  summarize(total_count = sum(value), .groups = 'drop')
+
+# Determine names unique to each group
+unique_to_group1 <- anti_join(group1_summary, group2_summary, by = "name") %>%
+  arrange(desc(total_count))
+unique_to_group2 <- anti_join(group2_summary, group1_summary, by = "name") %>%
+  arrange(desc(total_count))
+
+# Output the results
+unique_to_group1
+unique_to_group2
+
+
+```
+```
 
 ```
